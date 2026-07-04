@@ -1,7 +1,7 @@
-"""AlphaDesk API — one streaming chat endpoint.
+"""AlphaDesk API — one streaming chat endpoint, plus resume for HITL.
 
-The SSE event vocabulary this endpoint emits grows one session at a time
-(see README, "Streaming protocol"). Session 01: token / done / error.
+The SSE event vocabulary grows one session at a time (see README,
+"Streaming protocol"). S01: token/done/error · S02: + node/interrupt.
 """
 
 from dotenv import load_dotenv
@@ -11,9 +11,10 @@ load_dotenv()  # backend/.env — secrets stay out of code and out of git
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
+from langgraph.types import Command  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from .llm import stream_reply  # noqa: E402  (imported after the env is loaded)
+from .graph import graph  # noqa: E402  (imported after the env is loaded)
 from .sse import event  # noqa: E402
 
 app = FastAPI(title="AlphaDesk")
@@ -30,21 +31,55 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
+    thread_id: str  # client-generated; names this conversation's checkpoint
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str
+    answer: str
+
+
+async def stream_graph(graph_input, thread_id: str):
+    # thread_id selects which checkpointed conversation this run extends —
+    # state lives server-side in the checkpointer, not in the request.
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        # LangGraph's current streaming API: astream with multiple modes.
+        #   "messages" → per-token chunks from LLM calls inside nodes
+        #   "custom"   → whatever nodes write via get_stream_writer()
+        #   "updates"  → node results; also where an interrupt surfaces
+        async for mode, chunk in graph.astream(
+            graph_input, config, stream_mode=["messages", "custom", "updates"]
+        ):
+            if mode == "custom":
+                yield event(**chunk)
+            elif mode == "messages":
+                token, meta = chunk
+                # Only the respond node's tokens are the answer; the router's
+                # structured-output call also streams here and must not leak.
+                if token.content and meta.get("langgraph_node") == "respond":
+                    yield event("token", text=token.content)
+            elif mode == "updates" and "__interrupt__" in chunk:
+                yield event("interrupt", question=chunk["__interrupt__"][0].value["question"])
+        yield event("done")
+    except Exception as exc:
+        # A failure mid-stream must be an event, not a dead socket.
+        yield event("error", message=str(exc))
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest) -> StreamingResponse:
-    # The SSE stream is built by hand — no library — because the wire format
-    # *is* the lesson: `data: <json>` + blank line, one event at a time, over
-    # a response that stays open while the model generates.
-    def stream():
-        try:
-            for token in stream_reply(req.message):
-                yield event("token", text=token)
-            yield event("done")
-        except Exception as exc:
-            # A failure mid-stream must be an event, not a dead socket —
-            # the frontend can only render what arrives on the wire.
-            yield event("error", message=str(exc))
+    return StreamingResponse(
+        stream_graph({"messages": [("user", req.message)]}, req.thread_id),
+        media_type="text/event-stream",
+    )
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+
+@app.post("/api/chat/resume")
+def resume(req: ResumeRequest) -> StreamingResponse:
+    # Command(resume=...) hands the human's answer to the interrupt() call
+    # that paused this thread; the graph picks up exactly where it stopped.
+    return StreamingResponse(
+        stream_graph(Command(resume=req.answer), req.thread_id),
+        media_type="text/event-stream",
+    )
