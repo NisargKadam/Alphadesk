@@ -24,6 +24,10 @@ app = FastAPI(title="AlphaDesk")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    # Vite increments the port when 5173 is already occupied. Keep local
+    # development working on that fallback port (and when opened via
+    # 127.0.0.1) without allowing non-local origins.
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):517\d+$",
     allow_methods=["*"],
     allow_headers=["*"],
 )

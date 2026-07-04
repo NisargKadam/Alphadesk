@@ -52,12 +52,12 @@ export function useChat() {
       setBusy(true);
       try {
         await readSSE(`${API}${path}`, { ...body, thread_id: threadId }, handleEvent);
-      } catch {
+      } catch (error) {
+        const detail = error instanceof Error ? ` (${error.message})` : "";
         patchLast((m) => ({
           ...m,
           streaming: false,
-          error:
-            "Could not reach the backend on port 8000. Start it with `uvicorn app.main:app --reload --port 8000`, then retry.",
+          error: `The AlphaDesk backend request to ${API} failed${detail}. Check that this project's backend is running and that VITE_API_BASE points to it.`,
         }));
       } finally {
         setBusy(false);
