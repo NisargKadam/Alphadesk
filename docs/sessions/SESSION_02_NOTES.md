@@ -22,25 +22,29 @@
 10. Terminal — restart uvicorn; curl the same message twice with the same `thread_id`; the second answer remembers the first. **State, on the wire, ~40 minutes in.**
 11. `backend/app/graph.py` — `announce()` via `get_stream_writer()`; every node reports itself on the custom channel.
 12. `backend/app/graph.py` — the `clarify` node: `interrupt()` pauses the graph; the resume value comes back as its return. Warn: the node re-executes from the top on resume.
-13. `backend/app/main.py` — `POST /api/chat/resume` with `Command(resume=answer)`; run the demo from the terminal.
+13. `backend/app/main.py` — `POST /api/chat/resume` with `Command(resume=answer)`.
+14. `frontend/src/lib/stream.ts` — add the `node` and `interrupt` event types. The parser doesn't change — only the vocabulary.
+15. `frontend/src/hooks/useChat.ts` — `thread_id` per tab via `crypto.randomUUID()`; handle `node` (grow the trail, dedupe consecutive repeats) and `interrupt`.
+16. `frontend/src/components/NodeTrail.tsx` — the signature element arrives: chips slide in as the graph runs.
+17. `frontend/src/components/ApprovalCard.tsx` — the paused graph's question with an inline reply posting to `/api/chat/resume`.
+18. `frontend/src/components/MessageBubble.tsx` + `ChatWindow.tsx` + `App.tsx` — wire trail and card, bump suggestions and the session label; run the demo.
 
 ## Demo script
 
-Same `curl -N` as Session 01, now with a `thread_id` in every body — pick one
-(e.g. `"t-demo"`) and keep it for the whole conversation.
-
-1. **"My name is Priya and I mostly track semiconductor stocks."** — read the stream: `node router → node respond → tokens`. The graph announces itself on the wire before a single answer token.
+1. **"My name is Priya and I mostly track semiconductor stocks."** — point at the NodeTrail: `router → respond`. The graph is now visible in the product.
 2. **"What's my name and what do I track?"** — state, on camera. Same `thread_id`, so the checkpointer replays history into the model. Contrast with Session 01's demo 3.
-3. **"What about the other one?"** — routed `unclear`; an `interrupt` event arrives and the stream ends with the graph genuinely paused mid-run. Answer it with `curl -N localhost:8000/api/chat/resume -d '{"thread_id":"t-demo","answer":"I meant Nvidia"}'` — the same reply continues streaming. The resume is a second HTTP request against the same thread.
+3. **"What about the other one?"** — routed `unclear`; the ApprovalCard appears with the graph genuinely paused mid-run. Answer it (e.g. "I meant Nvidia") and the same reply continues streaming. Show the terminal: the resume is a second HTTP request against the same thread.
 
 ## Where it breaks
 
-- **Every message answers like a stranger.** A new `thread_id` is being sent per *message*. One id per conversation, or there is no conversation — the id names the checkpoint.
+- **Every message answers like a stranger.** A new `thread_id` is being generated per *message* (e.g. `crypto.randomUUID()` inside `send()` instead of `useMemo`). One id per conversation, or there is no conversation.
 - **The router's structured-output tokens leak into the answer.** With `stream_mode="messages"` every LLM call in every node streams. Filter on `metadata["langgraph_node"] == "respond"`.
-- **After the `interrupt`, posting the answer does nothing.** The resume request must go through `Command(resume=...)` on `/api/chat/resume` — posting the answer as a normal `/api/chat` message starts a *new* run at the router instead of resuming the paused `interrupt()`.
+- **After answering the ApprovalCard, nothing happens.** The resume request must go through `Command(resume=...)` — posting the answer as a normal `/api/chat` message starts a *new* run at the router instead of resuming the paused `interrupt()`.
 
 ## Stretch
 
+> **Budget note:** this session lands ~345 changed application lines against the ~250 target — the interrupt/resume loop and its two components don't compress further without losing the lesson. If class time runs short, the items below and the ApprovalCard polish (entrance motion, autofocus, icon) are the first things to cut and revisit here.
+
+- Persist `thread_id` in `localStorage` so a page reload rejoins the same conversation — then discuss why that's a product decision, not just a technical one.
+- Add a "reject" button to the ApprovalCard that resumes with a sentinel the graph maps to "answer with what you have".
 - Render the compiled graph with `graph.get_graph().draw_mermaid()` and paste it into the README.
-- Give `clarify` a timeout policy: what should a desk do with a question nobody answers? (Discussion, then code.)
-- Inspect the checkpointer: `graph.get_state({"configurable": {"thread_id": "t-demo"}})` in a REPL — the conversation is just data you can read.

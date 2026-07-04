@@ -25,7 +25,7 @@ cp .env.example .env       # then put your OpenAI API key in .env
 
 ```bash
 curl -N localhost:8000/api/chat -H 'Content-Type: application/json' \
-  -d '{"message":"What does Apple sell besides the iPhone?","thread_id":"t1"}'
+  -d '{"message":"What does the annual report say about AI risk?","thread_id":"t1"}'
 ```
 
 ## Streaming protocol
@@ -49,6 +49,7 @@ renderer per type):
 | `error`     | S01   | `message`  | Something failed; render it, stop.               |
 | `node`      | S02   | `name`     | A graph node started — the pipeline, visible.    |
 | `interrupt` | S02   | `question` | The graph paused for a human answer (see below). |
+| `citations` | S03   | `items`    | The numbered evidence the answer cites as `[n]`: `[{id, source, page, snippet}]`. |
 
 Since Session 02 every request also carries a client-generated `thread_id` —
 the conversation state lives server-side in the graph checkpointer, keyed by
@@ -56,11 +57,24 @@ that id. When an `interrupt` event arrives, the graph is paused;
 `POST /api/chat/resume` with `{"thread_id": "...", "answer": "..."}` resumes
 it and returns a fresh SSE stream that continues the same reply.
 
+## Filings ingest (Session 03)
+
+Drop annual reports or 10-K PDFs into `data/filings/` (a synthetic sample is
+included — see [data/filings/README.md](data/filings/README.md)), then:
+
+```bash
+cd backend
+.venv/bin/python -m app.ingest ../data/filings
+```
+
+First run downloads Chroma's local embedding model (~80 MB, no API key).
+Re-runs are idempotent. The index lives in `backend/chroma_db/` (gitignored).
+
 ## Session map
 
 1. **LLM & Agent Foundations** — streaming chat on a raw model call
-2. **LangChain & LangGraph** — StateGraph, thread state, HITL interrupt *(you are here)*
-3. **Retrieval & RAG** — filings ingest, Chroma retrieval, cited answers
+2. **LangChain & LangGraph** — StateGraph, thread state, HITL interrupt
+3. **Retrieval & RAG** — filings ingest, Chroma retrieval, cited answers *(you are here)*
 4. **Tool Use, Function Calling & MCP** — live market tools, inside and outside the graph
 5. – 10. Roadmap: enterprise RAG, multi-agent, memory, guardrails, observability,
    deployment — see [PROJECT_PLAN.md](PROJECT_PLAN.md).

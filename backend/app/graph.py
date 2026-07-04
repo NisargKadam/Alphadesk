@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from .llm import SYSTEM_PROMPT  # the Session 01 prompt survives the rearchitecture
+from .tools import search_filings
 
 
 class DeskState(TypedDict):
@@ -33,6 +34,9 @@ class DeskState(TypedDict):
     messages: Annotated[list, add_messages]
     route: str
     clarifying_question: Optional[str]
+    # Plain fields (no reducer) are *replaced* on write — but they still
+    # persist across turns in the checkpoint, so the router clears this one.
+    sources: list
 
 
 class RouteDecision(BaseModel):
@@ -51,11 +55,17 @@ llm = ChatOpenAI(model=os.environ["OPENAI_MODEL"])
 
 ROUTER_PROMPT = (
     "You route requests arriving at an equity research desk. Classify the "
-    "user's LATEST message given the conversation so far: 'market' = live "
-    "prices, quotes, recent moves; 'filings' = annual reports, 10-Ks, "
-    "disclosures; 'general' = anything answerable directly; 'unclear' = it "
-    "cannot be acted on without asking the user one clarifying question "
-    "(ambiguous reference, missing company, etc.)."
+    "user's LATEST message given the conversation so far:\n"
+    "- 'filings': anything a company's annual report or 10-K would answer — "
+    "reported financials and revenue, segments, dividends, risk factors, "
+    "strategy, policies. When torn between filings and general for a "
+    "company-specific fact, pick filings: the retrieval layer says honestly "
+    "whether the documents cover it.\n"
+    "- 'market': live prices, quotes, today's moves, recent news.\n"
+    "- 'general': definitions, concepts, anything answerable without "
+    "documents or live data.\n"
+    "- 'unclear': only when the message cannot be acted on at all without one "
+    "clarifying question (e.g. an ambiguous reference like 'the other one')."
 )
 
 
@@ -71,7 +81,12 @@ def router(state: DeskState) -> dict:
     decision = llm.with_structured_output(RouteDecision).invoke(
         [("system", ROUTER_PROMPT), *state["messages"]]
     )
-    return {"route": decision.route, "clarifying_question": decision.clarifying_question}
+    # sources=[] : last turn's evidence must not leak into this turn.
+    return {
+        "route": decision.route,
+        "clarifying_question": decision.clarifying_question,
+        "sources": [],
+    }
 
 
 def clarify(state: DeskState) -> dict:
@@ -85,17 +100,90 @@ def clarify(state: DeskState) -> dict:
     return {"messages": [HumanMessage(content=answer)]}
 
 
+class Ranking(BaseModel):
+    """Structured output for the re-rank pass: an ordering, not prose."""
+
+    indices: list[int] = Field(
+        description="0-based positions of the most relevant chunks, best first, at most 4."
+    )
+
+
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+
+
+def rerank(query: str, chunks: list[dict]) -> list[dict]:
+    # Listwise re-rank with one cheap structured model call: the retriever's
+    # top 10 (fast, approximate) get re-ordered down to the 4 the answer will
+    # actually cite. A trained cross-encoder does this job properly — that
+    # arrives in Session 05; the *shape* of the pipeline is what matters here.
+    numbered = "\n\n".join(f"[{i}] {c['text'][:400]}" for i, c in enumerate(chunks))
+    ranking = llm.with_structured_output(Ranking).invoke(
+        [
+            ("system", "Rank the excerpts by how well they answer the question."),
+            ("user", f"Question: {query}\n\nExcerpts:\n{numbered}"),
+        ]
+    )
+    kept = [chunks[i] for i in ranking.indices if 0 <= i < len(chunks)][:4]
+    return kept or chunks[:4]
+
+
+def retrieve(state: DeskState) -> dict:
+    announce("retrieve")
+    query = state["messages"][-1].content
+    hits = search_filings(query, k=10)
+    sources = rerank(query, hits) if RERANK_ENABLED and hits else hits[:4]
+    if sources:
+        # The frontend numbers its citation chips from this event; respond()
+        # below is instructed to cite with the same numbers. One vocabulary.
+        get_stream_writer()(
+            {
+                "type": "citations",
+                "items": [
+                    {"id": i + 1, "source": s["source"], "page": s["page"], "snippet": s["text"][:500]}
+                    for i, s in enumerate(sources)
+                ],
+            }
+        )
+    return {"sources": sources}
+
+
+GROUNDED_RULES = (
+    "Answer ONLY from the numbered sources below — not from memory. Every "
+    "sentence that states a fact must end with the marker(s) of the sources "
+    "backing it, like: The payout ratio was 44%. [1] Buybacks may supplement "
+    "dividends. [2][3] If the sources do not cover the question, say so "
+    "plainly instead of guessing."
+)
+
+NO_SOURCES_NOTE = (
+    "The filings index returned nothing (it may be empty — the ingest CLI "
+    "populates it). Say you have no filings to cite yet and suggest running "
+    "the ingest; answer only what you can without inventing specifics."
+)
+
+
 def respond(state: DeskState) -> dict:
     announce("respond")
-    # 'filings' and 'market' land here too for now: the routing skeleton
-    # comes before the capabilities (retrieval in S03, tools in S04).
-    reply = llm.invoke([("system", SYSTEM_PROMPT), *state["messages"]])
+    # 'market' lands here un-augmented for now: the routing skeleton comes
+    # before the capability (live tools arrive in Session 04).
+    system = SYSTEM_PROMPT
+    if state["route"] == "filings":
+        if state.get("sources"):
+            numbered = "\n\n".join(
+                f"[{i + 1}] ({s['source']}, p.{s['page']}) {s['text']}"
+                for i, s in enumerate(state["sources"])
+            )
+            system = f"{SYSTEM_PROMPT}\n\n{GROUNDED_RULES}\n\nSOURCES:\n{numbered}"
+        else:
+            system = f"{SYSTEM_PROMPT}\n\n{NO_SOURCES_NOTE}"
+    reply = llm.invoke([("system", system), *state["messages"]])
     return {"messages": [reply]}
 
 
 builder = StateGraph(DeskState)
 builder.add_node("router", router)
 builder.add_node("clarify", clarify)
+builder.add_node("retrieve", retrieve)
 builder.add_node("respond", respond)
 builder.add_edge(START, "router")
 builder.add_conditional_edges(
@@ -103,12 +191,13 @@ builder.add_conditional_edges(
     lambda state: state["route"],
     {
         "general": "respond",
-        "filings": "respond",  # Session 03: the retrieval path
+        "filings": "retrieve",  # Session 03: the retrieval path
         "market": "respond",  # Session 04: the tool-enabled path
         "unclear": "clarify",
     },
 )
 builder.add_edge("clarify", "respond")
+builder.add_edge("retrieve", "respond")
 builder.add_edge("respond", END)
 
 # In-process checkpoints: perfect for a classroom, gone on restart.
