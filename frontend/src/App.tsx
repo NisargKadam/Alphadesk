@@ -5,7 +5,7 @@
 import ChatWindow from "./components/ChatWindow";
 
 // Bumped each session as a new architectural layer lands.
-const SESSION_LABEL = "Session 01";
+const SESSION_LABEL = "Session 02";
 
 export default function App() {
   return (

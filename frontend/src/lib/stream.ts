@@ -3,11 +3,14 @@
 // the parser itself is never rewritten. The wire format staying boring is
 // what keeps every frontend diff small. Introduced in Session 01.
 // The SSE event vocabulary. It grows one session at a time — see
-// "Streaming protocol" in the README. Session 01 knows three events.
+// "Streaming protocol" in the README.
 export type StreamEvent =
   | { type: "token"; text: string }
   | { type: "done" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // Session 02 — the graph made visible:
+  | { type: "node"; name: string }
+  | { type: "interrupt"; question: string };
 
 // EventSource only speaks GET and we need to POST a JSON body, so we read
 // the response body ourselves and split it on the SSE frame boundary.

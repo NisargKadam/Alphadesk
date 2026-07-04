@@ -2,8 +2,11 @@
 
 The point of this file is what it *lacks*. We send only the incoming message,
 so the model cannot remember earlier turns (fixed with graph state in
-Session 02) and cannot look anything up (fixed with tools and retrieval in
+Session 02) and cannot look anything up (fixed with retrieval and tools in
 Sessions 03–04). Its two visible failures are the curriculum.
+
+Superseded by graph.py in Session 02; kept as the Session 01 artifact —
+`git switch -d session-01` shows it in service. Its SYSTEM_PROMPT lives on.
 """
 
 import os

@@ -45,16 +45,24 @@ data: {"type": "token", "text": "Apple"}\n\n
 The vocabulary grows one session at a time — the frontend parses this envelope
 once (in `src/lib/stream.ts`) and later sessions only add renderers:
 
-| Event   | Since | Payload     | Meaning                                  |
-| ------- | ----- | ----------- | ---------------------------------------- |
-| `token` | S01   | `text`      | One chunk of assistant text — append it. |
-| `done`  | S01   | —           | The reply is complete.                   |
-| `error` | S01   | `message`   | Something failed; render it, stop.       |
+| Event       | Since | Payload    | Meaning                                          |
+| ----------- | ----- | ---------- | ------------------------------------------------ |
+| `token`     | S01   | `text`     | One chunk of assistant text — append it.         |
+| `done`      | S01   | —          | The stream is complete.                          |
+| `error`     | S01   | `message`  | Something failed; render it, stop.               |
+| `node`      | S02   | `name`     | A graph node started — grow the NodeTrail.       |
+| `interrupt` | S02   | `question` | The graph paused for a human answer (see below). |
+
+Since Session 02 every request also carries a client-generated `thread_id` —
+the conversation state lives server-side in the graph checkpointer, keyed by
+that id. When an `interrupt` event arrives, the graph is paused;
+`POST /api/chat/resume` with `{"thread_id": "...", "answer": "..."}` resumes
+it and returns a fresh SSE stream that continues the same reply.
 
 ## Session map
 
-1. **LLM & Agent Foundations** — streaming chat on a raw model call *(you are here)*
-2. **LangChain & LangGraph** — StateGraph, thread state, HITL interrupt
+1. **LLM & Agent Foundations** — streaming chat on a raw model call
+2. **LangChain & LangGraph** — StateGraph, thread state, HITL interrupt *(you are here)*
 3. **Retrieval & RAG** — filings ingest, Chroma retrieval, cited answers
 4. **Tool Use, Function Calling & MCP** — live market tools, inside and outside the graph
 5. – 10. Roadmap: enterprise RAG, multi-agent, memory, guardrails, observability,

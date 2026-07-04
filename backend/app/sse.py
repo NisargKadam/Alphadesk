@@ -13,6 +13,6 @@ Introduced in Session 01.
 import json
 
 
-def event(type_: str, **payload) -> str:
+def event(type: str, **payload) -> str:  # noqa: A002 — shadowing `type` lets dicts splat straight in
     """Format one SSE event: data: {"type": ..., ...}\\n\\n"""
-    return f"data: {json.dumps({'type': type_, **payload})}\n\n"
+    return f"data: {json.dumps({'type': type, **payload})}\n\n"

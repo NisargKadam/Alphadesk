@@ -4,8 +4,15 @@
 // answer and how it was produced are one artifact. Introduced in Session 01.
 import { motion, useReducedMotion } from "motion/react";
 import type { ChatMessage } from "../hooks/useChat";
+import NodeTrail from "./NodeTrail";
+import ApprovalCard from "./ApprovalCard";
 
-export default function MessageBubble({ message }: { message: ChatMessage }) {
+interface MessageBubbleProps {
+  message: ChatMessage;
+  onResume: (answer: string) => void;
+}
+
+export default function MessageBubble({ message, onResume }: MessageBubbleProps) {
   const reduced = useReducedMotion();
   const entrance = reduced
     ? {}
@@ -26,16 +33,22 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
   }
 
   // Assistant replies are set as full-width editorial text, not a bubble —
-  // the desk speaks in the page's own voice.
+  // with the pipeline that produced them rendered above.
   return (
     <motion.div {...entrance} className="mb-8">
+      <NodeTrail nodes={message.nodes} />
+      {message.interrupt && (
+        <ApprovalCard question={message.interrupt} onResume={onResume} />
+      )}
       {message.error ? (
         <p className="text-[15px] leading-7 text-down">{message.error}</p>
       ) : (
-        <p className="text-[15px] leading-7 whitespace-pre-wrap">
-          {message.text}
-          {message.streaming && <span className="caret" aria-hidden />}
-        </p>
+        (message.text || message.streaming) && (
+          <p className="text-[15px] leading-7 whitespace-pre-wrap">
+            {message.text}
+            {message.streaming && <span className="caret" aria-hidden />}
+          </p>
+        )
       )}
     </motion.div>
   );

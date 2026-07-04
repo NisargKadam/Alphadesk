@@ -9,14 +9,17 @@ import Composer from "./Composer";
 
 // The current session's demo script, lines 1–3. Updated each session.
 const SUGGESTIONS = [
-  "What does Apple actually sell besides the iPhone?",
-  "What was Apple's exact revenue in fiscal 2025?",
-  "What did I just ask you?",
+  "My name is Priya and I mostly track semiconductor stocks.",
+  "What's my name and what do I track?",
+  "What about the other one?",
 ];
 
 export default function ChatWindow() {
-  const { messages, busy, send } = useChat();
+  const { messages, busy, send, resume } = useChat();
   const endRef = useRef<HTMLDivElement>(null);
+  const awaitingAnswer = messages.at(-1)?.interrupt !== undefined;
+  // ^ composer locks while an ApprovalCard waits — one conversation,
+  // one open question at a time.
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -29,13 +32,15 @@ export default function ChatWindow() {
           {messages.length === 0 ? (
             <EmptyState onPick={send} />
           ) : (
-            messages.map((m, i) => <MessageBubble key={i} message={m} />)
+            messages.map((m, i) => (
+              <MessageBubble key={i} message={m} onResume={resume} />
+            ))
           )}
           <div ref={endRef} />
         </div>
       </div>
       <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-        <Composer disabled={busy} onSend={send} />
+        <Composer disabled={busy || awaitingAnswer} onSend={send} />
       </div>
     </main>
   );
