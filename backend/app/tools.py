@@ -5,6 +5,8 @@ Everything the agent can *do* (beyond talking) lives in this file.
 
 import chromadb
 from chromadb.config import Settings
+import yfinance as yf
+from langchain_core.tools import tool
 
 _filings = None
 
@@ -31,3 +33,37 @@ def search_filings(query: str, k: int = 10) -> list[dict]:
         {"text": doc, "source": meta["source"], "page": meta["page"]}
         for doc, meta in zip(result["documents"][0], result["metadatas"][0])
     ]
+
+@tool
+def get_price_history(ticker: str, period: str = "1mo") -> dict:
+    "Daily closing prices of stocks, ['5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max']"
+    try:
+        closes = yf.Ticker(ticker).history(period=period)["Close"]
+        if closes.empty:
+            return {"error": f"No price history for '{ticker}' over the period '{period}'."}
+        max_val = max(1, len(closes) // 30)  # limit to ~30 points for brevity
+        return {
+            "ticker": ticker,
+            "period": period,
+            "closes": [round(c, 2) for c in closes.tolist()[::max_val]],
+        }  
+    except Exception as e:
+        return {"error": f"Failed to retrieve price history for '{ticker}': {str(e)}"}
+
+@tool
+def get_quotes(ticker: str) -> dict:
+    "Live Quote for a stock ticker."
+    try:
+        info = yf.Ticker(ticker).fast_info
+        price, prev = info["_last_price"], info["previousClose"]
+        return {
+            "ticker": ticker,
+            "price": round(price, 2),
+            "currency": info["currency"],
+            "change": round(price - prev, 2),
+            "percent_change": round((price - prev) / prev * 100, 2),
+        }
+    except Exception as e:
+        return {"error": f"Failed to retrieve quote for '{ticker}': {str(e)}"}
+
+MARKET_TOOLS = [get_quotes, get_price_history]

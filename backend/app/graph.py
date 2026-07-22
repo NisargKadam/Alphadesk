@@ -8,10 +8,11 @@ interrupt. (Old tutorials build agents with `langgraph.prebuilt
 the nodes and edges is the lesson.)
 """
 
+import json
 import os
 from typing import Annotated, Literal, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 # Old tutorials import MemorySaver — renamed InMemorySaver in 1.x, same class.
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from .llm import SYSTEM_PROMPT  # the Session 01 prompt survives the rearchitecture
-from .tools import search_filings
+from .tools import MARKET_TOOLS, search_filings
 
 
 class DeskState(TypedDict):
@@ -163,6 +164,11 @@ NO_SOURCES_NOTE = (
 
 
 def respond(state: DeskState) -> dict:
+    model = llm
+    if state["route"] == "market":
+        model = llm.bind_tools(MARKET_TOOLS)
+        #bind_tools attach all of tools JSON schema to the request.
+        #Function calling protocol is not magic it's literally binding the tools to the model request.
     announce("respond")
     # 'market' lands here un-augmented for now: the routing skeleton comes
     # before the capability (live tools arrive in Session 04).
@@ -176,15 +182,27 @@ def respond(state: DeskState) -> dict:
             system = f"{SYSTEM_PROMPT}\n\n{GROUNDED_RULES}\n\nSOURCES:\n{numbered}"
         else:
             system = f"{SYSTEM_PROMPT}\n\n{NO_SOURCES_NOTE}"
-    reply = llm.invoke([("system", system), *state["messages"]])
+    reply = model.invoke([("system", system), *state["messages"]])
     return {"messages": [reply]}
 
+TOOL_REGISTRY = {t.name: t for t in MARKET_TOOLS}
+
+def tools(state: DeskState) -> dict:
+    announce("tools")
+    writer = get_stream_writer()
+    results = []
+    for call in state["messages"][-1].tool_calls:
+        writer({"type": "tool_call", "name": call["name"], "args": call["args"]})
+        payload = TOOL_REGISTRY[call["name"]].invoke(call["args"])
+        results.append(ToolMessage(content=json.dumps(payload), tool_call_id=call["id"]))
+    return {"messages": results}
 
 builder = StateGraph(DeskState)
 builder.add_node("router", router)
 builder.add_node("clarify", clarify)
 builder.add_node("retrieve", retrieve)
 builder.add_node("respond", respond)
+builder.add_node("tools", tools)
 builder.add_edge(START, "router")
 builder.add_conditional_edges(
     "router",
@@ -198,7 +216,12 @@ builder.add_conditional_edges(
 )
 builder.add_edge("clarify", "respond")
 builder.add_edge("retrieve", "respond")
-builder.add_edge("respond", END)
+builder.add_conditional_edges(
+    "respond",
+    lambda state: "tools" if state["messages"][-1].tool_calls else END,
+    {"tools": "tools", END:END},
+)
+builder.add_edge("tools", "respond")
 
 # In-process checkpoints: perfect for a classroom, gone on restart.
 # Session 07 swaps in a durable checkpointer without touching the graph.
